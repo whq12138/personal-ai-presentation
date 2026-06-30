@@ -1,0 +1,124 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+/* ============================================================
+   Personal AI Presentation — Global Styles
+   Dark OLED + AI Native UI Design System
+   ============================================================ */
+
+/* Design tokens via Tailwind v4 @theme */
+@theme inline {
+  --color-background: #0A192F;
+  --color-foreground: #E6F1FF;
+  --color-surface: #112240;
+  --color-accent: #64FFDA;
+  --color-secondary-accent: #FFD700;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", "SF Mono", ui-monospace, monospace;
+}
+
+/* Base styles */
+body {
+  background: #0A192F;
+  color: #E6F1FF;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 255, 218, 0.15);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 255, 218, 0.3);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 255, 218, 0.15) transparent;
+}
+
+/* === Animations === */
+
+/* Typing indicator bounce */
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-6px); }
+}
+
+/* Scan line (from cyberpunk-ui) */
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(720px); }
+}
+
+/* Pulsing glow for AI status indicator */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 6px rgba(100, 255, 218, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 15px rgba(100, 255, 218, 0.8);
+  }
+}
+
+/* Fade in up for slide transitions */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Gradient border animation */
+@keyframes gradient-rotate {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Utility classes */
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out forwards;
+}
+
+/* Glass morphism utility */
+.glass-panel {
+  background: rgba(10, 25, 47, 0.8);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(100, 255, 218, 0.1);
+}
+
+/* Glow text effect (from dark-oled) */
+.glow-text {
+  text-shadow: 0 0 10px rgba(100, 255, 218, 0.3);
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
