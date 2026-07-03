@@ -1,10 +1,18 @@
 """
-JSON Schema Fault Tolerance — repairs malformed LLM JSON output.
+JSON Fault Tolerance Engine — rescues malformed LLM JSON output.
 
-When domestic models (DeepSeek, GLM, etc.) occasionally output broken JSON
-(missing closing brackets, trailing commas, embedded markdown), this module
-attempts repair before failing. If repair is impossible, it returns a safe
-default presentation template so the UI never shows a white screen.
+Repair pipeline (9 strategies, executed in priority order):
+  1. Direct json.loads()
+  2. Strip ```json ... ``` or ``` ... ``` markdown fences
+  3. Extract content between first { and last } (DeepSeek verbose mode)
+  4. Remove trailing commas
+  5. Close unclosed brackets/braces
+  6. Extract first depth-balanced JSON object
+  7. Rebuild presentation from slides array fragment
+  8. Validate language consistency (catch mixed CN/EN in wrong target lang)
+  9. Safe fallback → never white-screen
+
+If all strategies fail, get_safe_presentation() returns a graceful error slide.
 """
 
 import json
@@ -22,7 +30,7 @@ from app.models.slide import (
 
 logger = logging.getLogger(__name__)
 
-# A minimal safe fallback presentation (shown when JSON is irreparable)
+# Minimal safe fallback — shown when nothing else works
 SAFE_FALLBACK_PRESENTATION = Presentation(
     metadata=PresentationMetadata(
         title="AI Generated Slides",
@@ -41,108 +49,217 @@ SAFE_FALLBACK_PRESENTATION = Presentation(
 )
 
 
+# ============================================================
+# 主入口
+# ============================================================
+
 def attempt_json_repair(raw_text: str) -> tuple[Optional[dict], bool]:
     """
-    Try to repair malformed JSON from an LLM.
+    Multi-strategy JSON repair pipeline.  Never raises.
 
     Returns:
         (parsed_dict_or_None, was_repaired: bool)
     """
     original = raw_text.strip()
 
-    # Step 1: Try direct parse
+    # ── Step 1: Direct parse ──
     try:
         return json.loads(original), False
     except json.JSONDecodeError:
         pass
 
-    # Step 2: Strip markdown code fences (common LLM output mistake)
+    # ── Step 2: Strip markdown fences ```json ... ``` ──
     cleaned = _strip_markdown_fences(original)
     if cleaned != original:
         try:
-            logger.info("JSON repaired by stripping markdown code fences")
+            logger.info("✅ JSON repaired: stripped markdown fences")
             return json.loads(cleaned), True
         except json.JSONDecodeError:
             pass
 
-    # Step 3: Fix trailing commas (common in some model outputs)
+    # ── Step 3: Extract content between first { and last } ──
+    # This handles DeepSeek's most common failure mode:
+    # "Here is your presentation JSON: { ... } Hope this helps!"
+    extracted = extract_json_content(cleaned)
+    if extracted is not None:
+        logger.info("✅ JSON repaired: extracted from surrounding text (first{ → last})")
+        return extracted, True
+
+    # ── Step 4: Fix trailing commas ──
     fixed = re.sub(r",(\s*[}\]])", r"\1", cleaned)
     if fixed != cleaned:
         try:
-            logger.info("JSON repaired by removing trailing commas")
+            logger.info("✅ JSON repaired: removed trailing commas")
             return json.loads(fixed), True
         except json.JSONDecodeError:
             pass
 
-    # Step 4: Try to close unclosed brackets/braces
+    # ── Step 5: Close unclosed brackets/braces ──
     result = _close_unclosed_brackets(fixed)
     if result:
+        logger.info("✅ JSON repaired: closed unclosed brackets")
         return result, True
 
-    # Step 5: Extract the first valid JSON object from the text
+    # ── Step 6: Extract first valid JSON object (brace-matching) ──
     result = _extract_json_object(fixed)
     if result:
-        logger.info("JSON repaired by extracting first valid JSON object")
+        logger.info("✅ JSON repaired: extracted first depth-balanced JSON object")
         return result, True
 
-    # Step 6: Attempt to extract slides array and rebuild
+    # ── Step 7: Rebuild from slides array fragment ──
     result = _rebuild_from_slides_array(fixed)
     if result:
-        logger.info("JSON repaired by rebuilding from slides array fragment")
+        logger.info("✅ JSON repaired: rebuilt from slides array fragment")
         return result, True
 
-    logger.error("All JSON repair strategies failed")
+    # ── Step 8: Last-ditch: repair common DeepSeek structural errors ──
+    result = _deepseek_specific_repair(fixed)
+    if result:
+        logger.info("✅ JSON repaired: DeepSeek-specific structural fix")
+        return result, True
+
+    logger.error("❌ All JSON repair strategies exhausted")
     return None, False
 
 
+def extract_json_content(raw_text: str) -> Optional[dict]:
+    """
+    Find the first '{' and the last '}' in the text, extract the slice,
+    and attempt to parse it.  Handles verbose LLMs that wrap JSON in
+    explanatory sentences, markdown, or multi-line prose.
+
+    Examples that this recovers:
+      "Here is your JSON: {"metadata":...} Let me know if you need changes."
+      "好的，以下是JSON:\n\n{\n  "slides": [...]\n}\n\n希望对你有帮助。"
+      "{\n  broken...}\nSome conclusion text"
+      "```json\n{valid JSON}\n```\nOops forgot the backticks"
+    """
+    if not raw_text:
+        return None
+
+    first_brace = raw_text.find("{")
+    last_brace = raw_text.rfind("}")
+
+    if first_brace == -1 or last_brace == -1 or first_brace >= last_brace:
+        return None
+
+    candidate = raw_text[first_brace : last_brace + 1]
+
+    # Try raw parse
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as e:
+        logger.debug(f"Slice parse failed (pos={first_brace}..{last_brace}): {e}")
+
+    # Try after stripping markdown fences inside the candidate
+    candidate2 = _strip_markdown_fences(candidate)
+    try:
+        return json.loads(candidate2)
+    except json.JSONDecodeError:
+        pass
+
+    # Try after removing trailing commas
+    candidate3 = re.sub(r",(\s*[}\]])", r"\1", candidate2)
+    try:
+        return json.loads(candidate3)
+    except json.JSONDecodeError:
+        pass
+
+    # Try closing unclosed brackets in the extracted slice
+    result = _close_unclosed_brackets(candidate3)
+    if result:
+        return result
+
+    return None
+
+
 def get_safe_presentation(raw_llm_output: Optional[str] = None) -> Presentation:
-    """
-    Return a safe fallback presentation. Never throws.
-    Call this when JSON repair fails — the UI will show a graceful
-    error slide instead of a white screen.
-    """
+    """Safe fallback. Never throws. Includes error context in the slide for debugging."""
     if raw_llm_output:
-        logger.warning(
-            "Returning safe fallback presentation. "
-            f"Raw output (first 200 chars): {raw_llm_output[:200]}"
-        )
+        logger.warning(f"Returning safe fallback (raw={raw_llm_output[:200]})")
     fallback = SAFE_FALLBACK_PRESENTATION.model_copy(deep=True)
     fallback.metadata.createdAt = datetime.now(timezone.utc).isoformat()
+
+    # Append a debug slide with the raw LLM output snippet
+    if raw_llm_output:
+        from app.models.slide import Slide, SlideLayout as SL
+        snippet = raw_llm_output[:500]
+        fallback.slides.append(Slide(
+            id="debug-raw",
+            layout=SL.BULLET_LIST,
+            title="🔧 Debug: LLM Raw Output (first 500 chars)",
+            body=[
+                f"LLM returned: {snippet}",
+                "This output could not be parsed as valid slide JSON.",
+                "Check: API key validity, model availability, network connectivity.",
+            ],
+        ))
     return fallback
+
+
+def validate_language_consistency(presentation: Presentation, expected_lang: str) -> tuple[Presentation, bool]:
+    """
+    Post-generation language check. Detects if the LLM produced output
+    in the wrong language (e.g. Chinese when English was requested).
+
+    Returns (possibly_fixed_presentation, was_corrected).
+    Currently a warning-only pass-through — language enforcement lives
+    in the prompt, but this gives visibility when it fails.
+    """
+    if expected_lang in ("auto", None):
+        return presentation, False
+
+    # Sample first slide title + body for detection
+    cn_chars = 0
+    en_chars = 0
+    samples: list[str] = []
+    for slide in presentation.slides[:3]:
+        if slide.title:
+            samples.append(slide.title)
+        if slide.body:
+            body = slide.body if isinstance(slide.body, str) else " ".join(slide.body)
+            samples.append(body)
+
+    for s in samples:
+        cn_chars += len(re.findall(r"[一-鿿]", s))
+        en_chars += len(re.findall(r"[a-zA-Z]", s))
+
+    if expected_lang == "zh" and en_chars > cn_chars * 3:
+        logger.warning(f"⚠️ Language mismatch: expected zh but output appears mostly English "
+                       f"(cn={cn_chars} en={en_chars})")
+        return presentation, True
+    if expected_lang == "en" and cn_chars > en_chars * 3:
+        logger.warning(f"⚠️ Language mismatch: expected en but output appears mostly Chinese "
+                       f"(cn={cn_chars} en={en_chars})")
+        return presentation, True
+
+    return presentation, False
 
 
 # ============================================================
 # Internal helpers
 # ============================================================
 
-
 def _strip_markdown_fences(text: str) -> str:
-    """Remove ```json ... ``` or ``` ... ``` wrappers."""
-    # Pattern: optional opening fence, content, optional closing fence
-    match = re.search(
-        r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL
-    )
+    """Remove ```json ... ``` or ``` ... ``` wrappers.  Also handles
+    lone opening/closing fences (DeepSeek sometimes omits one)."""
+    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
-    # Sometimes only the opening fence is present
     text = re.sub(r"^```(?:json)?\s*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)
     return text.strip()
 
 
 def _close_unclosed_brackets(text: str) -> Optional[dict]:
-    """Try appending }] or ]} to close unclosed brackets."""
+    """Append }] or ]} to close missing brackets."""
     if not text:
         return None
-    # Count unclosed pairs
     open_braces = text.count("{") - text.count("}")
     open_brackets = text.count("[") - text.count("]")
-
     if open_braces <= 0 and open_brackets <= 0:
         return None
 
-    # Try closing brackets first, then braces (most JSON ends with }])
-    # or braces first, then brackets
     attempts = []
     if open_brackets > 0 and open_braces > 0:
         attempts.append(text + "]" * open_brackets + "}" * open_braces)
@@ -157,13 +274,11 @@ def _close_unclosed_brackets(text: str) -> Optional[dict]:
             return json.loads(attempt)
         except json.JSONDecodeError:
             continue
-
     return None
 
 
 def _extract_json_object(text: str) -> Optional[dict]:
-    """Find the first { ... } JSON object in the text."""
-    # Find the outermost braces
+    """Find the first depth-balanced { ... } chunk."""
     depth = 0
     start = -1
     for i, ch in enumerate(text):
@@ -178,30 +293,23 @@ def _extract_json_object(text: str) -> Optional[dict]:
                 try:
                     return json.loads(candidate)
                 except json.JSONDecodeError:
-                    # Keep looking for a better match
                     start = -1
-
     return None
 
 
 def _rebuild_from_slides_array(text: str) -> Optional[dict]:
     """If we can find a 'slides' array, rebuild a minimal presentation around it."""
-    # Try to find and parse the slides array
-    slides_match = re.search(
-        r'"slides"\s*:\s*(\[.*?\](?=\s*[},]|\s*$))', text, re.DOTALL
-    )
+    slides_match = re.search(r'"slides"\s*:\s*(\[.*?\](?=\s*[},]|\s*$))', text, re.DOTALL)
     if not slides_match:
         return None
 
-    slides_json = slides_match.group(1)
     try:
-        slides = json.loads(slides_json)
+        slides = json.loads(slides_match.group(1))
         if not isinstance(slides, list) or len(slides) == 0:
             return None
     except json.JSONDecodeError:
         return None
 
-    # Try to extract a title
     title = "AI Generated Slides"
     title_match = re.search(r'"title"\s*:\s*"([^"]+)"', text)
     if title_match:
@@ -215,3 +323,32 @@ def _rebuild_from_slides_array(text: str) -> Optional[dict]:
         },
         "slides": slides,
     }
+
+
+def _deepseek_specific_repair(text: str) -> Optional[dict]:
+    """
+    DeepSeek occasionally outputs structurally correct JSON but with
+    known quirks: unescaped newlines in strings, BOM prefix, or
+    double-encoded content.  Try to fix these.
+    """
+    # Remove BOM
+    if text.startswith("﻿"):
+        text = text[1:]
+
+    # Try unescape double-escaped quotes (\" → ")
+    fixed = text.replace('\\"', '"').replace('\\n', '\n')
+    if fixed != text:
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+    # Try re-escape by finding the outermost {} and brute-forcing json.loads
+    # with a very permissive approach — replace literal newlines inside strings
+    fixed2 = re.sub(r'(?<!\\)\\(?=")', '', text)  # fix single backslash before quote
+    try:
+        return json.loads(fixed2)
+    except json.JSONDecodeError:
+        pass
+
+    return None

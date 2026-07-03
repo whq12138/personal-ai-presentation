@@ -66,6 +66,13 @@ async def check_llm():
     print(f"   端点:  {api_base}")
     print(f"   模型:  {model}")
     print(f"   供应商: {provider}")
+
+    # 检测代理配置
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if http_proxy or https_proxy:
+        print(f"   HTTP_PROXY:  {http_proxy or '(not set)'}")
+        print(f"   HTTPS_PROXY: {https_proxy or '(not set)'}")
     print()
 
     try:

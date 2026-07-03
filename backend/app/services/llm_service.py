@@ -18,7 +18,9 @@ from openai import AsyncOpenAI, APIError, RateLimitError, BadRequestError, APITi
 from app.config import get_settings
 from app.models.slide import Presentation
 from app.services.prompt_builder import build_generate_prompt, LANGUAGE_INSTRUCTIONS
-from app.services.json_repair import attempt_json_repair, get_safe_presentation
+from app.services.json_repair import (
+    attempt_json_repair, extract_json_content, get_safe_presentation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +198,14 @@ class LLMService:
         return LANGUAGE_INSTRUCTIONS[lang]
 
     def _parse_and_validate(self, raw_json: str) -> tuple[Presentation, bool]:
-        data, was_repaired = self._parse_raw_json(raw_json)
+        # Fast path: try extract JSON from surrounding text first
+        # (DeepSeek often wraps valid JSON in "Here is your JSON: ... Hope this helps!")
+        fast = extract_json_content(raw_json)
+        if fast is not None:
+            data, was_repaired = fast, True
+        else:
+            data, was_repaired = self._parse_raw_json(raw_json)
+
         if data is None:
             return get_safe_presentation(raw_json), True
         if "slides" not in data or not data.get("slides"):
