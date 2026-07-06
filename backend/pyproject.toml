@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (real LLM calls, may take 30-120s each)",
+]
+timeout = 300
