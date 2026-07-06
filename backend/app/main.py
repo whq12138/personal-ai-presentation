@@ -42,6 +42,15 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
+    # Layout plugin registry auto-discovery
+    from app.layouts.registry import layout_registry
+    layout_registry.auto_discover()
+    logger.info(
+        f"Layout registry loaded — {len(layout_registry.get_names('premium'))} layout plugins "
+        f"(free={len(layout_registry.get_names('free'))}, "
+        f"premium={len(layout_registry.get_names('premium'))})"
+    )
+
     # Privacy shredder (APScheduler — hourly cron)
     start_scheduler()
 

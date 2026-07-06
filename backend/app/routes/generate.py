@@ -21,30 +21,24 @@ from app.middleware.sanitizer import (
 )
 from app.middleware.rate_limiter import rate_limiter
 from app.auth.deps import get_current_user, CurrentUser
-from app.config import get_settings
+from app.layouts.registry import layout_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/generate", tags=["generate"])
 
 # ============================================================
-# 层级权限拦截 — FREE 用户不可使用高级布局
+# 层级权限拦截 — 代理到布局注册器 (无硬编码)
 # ============================================================
 
 def _validate_layouts_for_tier(slides: list, user_tier: str) -> list[str] | None:
     """
-    检查幻灯片中是否包含用户等级不允许的高级布局。
-    返回 None 表示全部通过，返回 list 表示违规布局列表。
+    Query the LayoutRegistry for tier-gating.  Each layout plugin declares
+    its own is_premium flag — no hardcoded string list here.
     """
-    from app.models.user import UserTier
-    settings = get_settings()
-    allowed = (
-        settings.PREMIUM_LAYOUTS if user_tier == UserTier.PREMIUM.value
-        else settings.FREE_LAYOUTS
-    )
-    violations = []
+    violations: list[str] = []
     for s in slides:
         layout = s.get("layout", "") if isinstance(s, dict) else getattr(s, "layout", "")
-        if layout and layout not in allowed:
+        if layout and not layout_registry.is_allowed(layout, user_tier):
             violations.append(layout)
     return list(set(violations)) if violations else None
 

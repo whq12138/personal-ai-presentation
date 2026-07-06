@@ -30,11 +30,13 @@ class CurrentUser:
 
     @property
     def allowed_layouts(self) -> list[str]:
-        from app.config import get_settings
-        s = get_settings()
-        if self.tier == UserTier.PREMIUM:
-            return s.PREMIUM_LAYOUTS
-        return s.FREE_LAYOUTS
+        """Layouts accessible at this user's tier — delegated to LayoutRegistry.
+
+        Adding a new layout plugin in app/layouts/plugins.py automatically
+        updates this list with zero changes to auth/deps.py.
+        """
+        from app.layouts.registry import layout_registry
+        return layout_registry.get_names(tier=self.tier.value)
 
 
 async def get_current_user(

@@ -69,12 +69,19 @@ class Settings:
     PREMIUM_GENERATIONS_PER_HOUR: int = int(os.getenv("PREMIUM_GENERATIONS_PER_HOUR", "60"))
     PREMIUM_GENERATIONS_PER_DAY: int = int(os.getenv("PREMIUM_GENERATIONS_PER_DAY", "480"))
 
-    # Allowed layouts by tier
-    FREE_LAYOUTS: list[str] = ["title", "two-column", "bullet-list", "highlight-number"]
-    PREMIUM_LAYOUTS: list[str] = [
-        "title", "two-column", "bullet-list", "highlight-number",
-        "table", "chart", "bleed-image", "timeline", "comparison",
-    ]
+    # Layout tiers — delegated to LayoutRegistry (backend/app/layouts/plugins.py)
+    # Free users get all non-premium plugins; Premium users get everything.
+    # Adding a new layout plugin → just add one class in plugins.py.
+    # No changes needed here.
+    @property
+    def FREE_LAYOUTS(self) -> list[str]:
+        from app.layouts.registry import layout_registry
+        return layout_registry.get_names(tier="free")
+
+    @property
+    def PREMIUM_LAYOUTS(self) -> list[str]:
+        from app.layouts.registry import layout_registry
+        return layout_registry.get_names(tier="premium")
 
     # ============================================================
     # Payment (Phase 3 Step 4)

@@ -38,7 +38,6 @@ COLORS = {
     "black": RGBColor(0x00, 0x00, 0x00),
 }
 
-
 def generate_pptx(presentation: Presentation) -> bytes:
     """
     Convert a Presentation object to a .pptx byte stream.
@@ -61,19 +60,12 @@ def generate_pptx(presentation: Presentation) -> bytes:
         ppt_slide = prs.slides.add_slide(blank_layout)
         _set_slide_background(ppt_slide, slide)
 
-        layout_handlers = {
-            SlideLayout.TITLE: _render_title_slide,
-            SlideLayout.TWO_COLUMN: _render_two_column_slide,
-            SlideLayout.HIGHLIGHT_NUMBER: _render_highlight_number_slide,
-            SlideLayout.TABLE: _render_table_slide,
-            SlideLayout.BULLET_LIST: _render_bullet_list_slide,
-        }
-
-        handler = layout_handlers.get(slide.layout)
+        handler = _LAYOUT_RENDERERS.get(slide.layout.value)
         if handler:
             handler(ppt_slide, slide)
         else:
-            _render_title_slide(ppt_slide, slide)  # fallback
+            logger.warning(f"No PPTX renderer for layout '{slide.layout}', falling back to title")
+            _render_title_slide(ppt_slide, slide)
 
     # Save to bytes buffer
     output = io.BytesIO()
@@ -324,3 +316,17 @@ def _render_content_blocks(slide, blocks: list[ContentBlock], left, top, width, 
             p.font.color.rgb = COLORS["text_primary"]
 
         p.space_after = Pt(8)
+
+
+# ============================================================
+# Layout → PPTX renderer registry (at end of file — all render
+# functions defined above, no forward-refs)
+# ============================================================
+_LAYOUT_RENDERERS: dict[str, callable] = {
+    "title": _render_title_slide,
+    "two-column": _render_two_column_slide,
+    "highlight-number": _render_highlight_number_slide,
+    "table": _render_table_slide,
+    "bullet-list": _render_bullet_list_slide,
+    # Future layouts: add one function + one line here
+}
