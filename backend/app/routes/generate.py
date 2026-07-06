@@ -6,6 +6,7 @@ GET  /generate/task/{task_id}/result — Get completed task result.
 """
 
 import json
+import asyncio
 import logging
 from fastapi import APIRouter, HTTPException, status, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,58 +59,99 @@ async def _run_generation(
     target_lang = input_payload.get("target_lang", "auto")
     enable_images = input_payload.get("enable_images", True)
     user_id = input_payload["user_id"]
-
-    # ——— 阶段 1/4：解析大纲 (5% → 30%) ———
-    await task_manager.update_progress(task_id, 0.05, "正在解构您的文稿大纲...")
-    await task_manager.update_progress(task_id, 0.12, "识别内容层级与关键数据...")
+    user_tier = input_payload.get("user_tier", "free")
 
     llm = get_llm_service()
-    presentation, was_repaired = await llm.generate_presentation(
-        text=text, style=style, target_lang=target_lang, enable_images=enable_images
-    )
 
-    # === Tier 布局拦截: FREE 用户不可使用高级布局 ===
-    user_tier = input_payload.get("user_tier", "free")
-    slide_dicts = [s.model_dump() if hasattr(s, "model_dump") else s for s in presentation.slides]
-    violations = _validate_layouts_for_tier(slide_dicts, user_tier)
-    if violations:
-        from app.models.user import UserTier
-        await task_manager.update_progress(
-            task_id, 0.25,
-            f"检测到高级布局 {violations}，仅 Premium 用户可用。请升级会员。"
-        )
-        raise ValueError(
-            f"该排版属于高级会员专属 ({', '.join(violations)})，请升级后使用。"
-        )
+    if llm._mock:
+        # 🎭 Mock 模式 — 模拟完整管线 + 分阶段进度
+        lang_label = "中文" if target_lang == "zh" else ("英文" if target_lang == "en" else "原文")
 
-    lang_label = "中文" if target_lang == "zh" else ("英文" if target_lang == "en" else "原文")
-    await task_manager.update_progress(
-        task_id, 0.30,
-        f"大纲解析完成，共 {len(presentation.slides)} 页，已翻译为{lang_label}..."
-    )
+        # 阶段 1: 解析
+        await task_manager.update_progress(task_id, 0.05, "正在解构您的文稿大纲...")
+        await asyncio.sleep(0.8)
+        await task_manager.update_progress(task_id, 0.12, "识别内容层级与关键数据...")
+        await asyncio.sleep(0.8)
+        await task_manager.update_progress(task_id, 0.30, f"大纲解析完成，共 3 页，已翻译为{lang_label}...")
+        await asyncio.sleep(0.6)
 
-    # ——— 阶段 2/4：智能排版 (30% → 65%) ———
-    await task_manager.update_progress(task_id, 0.35, "正在为您进行核心页面排版...")
-    await task_manager.update_progress(task_id, 0.50, "优化排版节奏与视觉层次...")
-    await task_manager.update_progress(task_id, 0.60, "应用设计系统 (间距/配色/字体)...")
-    await task_manager.update_progress(task_id, 0.65, "页面排版完成，正在进行视觉润色...")
+        # 阶段 2: 排版
+        await task_manager.update_progress(task_id, 0.35, "正在为您进行核心页面排版...")
+        await asyncio.sleep(0.8)
+        await task_manager.update_progress(task_id, 0.50, "优化排版节奏与视觉层次...")
+        await asyncio.sleep(0.8)
+        await task_manager.update_progress(task_id, 0.60, "应用设计系统 (间距/配色/字体)...")
+        await asyncio.sleep(0.6)
+        await task_manager.update_progress(task_id, 0.65, "页面排版完成，正在进行视觉润色...")
+        await asyncio.sleep(0.6)
 
-    # ——— 阶段 3/4：视觉配图 (65% → 90%) ———
-    if enable_images:
-        await task_manager.update_progress(task_id, 0.68, "正在调用图像引擎生成高质量视觉配图...")
-        try:
-            image_service = get_image_service()
-            presentation = await image_service.enrich_presentation(presentation)
-            await task_manager.update_progress(task_id, 0.85, f"视觉配图生成完成 ({len(presentation.slides)} 页已装饰)")
-        except Exception as e:
-            logger.warning(f"Image enrichment failed (non-fatal): {e}")
-            await task_manager.update_progress(task_id, 0.85, "视觉配图使用默认素材 (可后续替换)")
+        # 阶段 3: 配图
+        if enable_images:
+            await task_manager.update_progress(task_id, 0.68, "正在调用图像引擎生成高质量视觉配图...")
+            await asyncio.sleep(1.0)
+            await task_manager.update_progress(task_id, 0.85, "视觉配图生成完成 (3 页已装饰)")
+        else:
+            await task_manager.update_progress(task_id, 0.85, "跳过图像生成 (已按用户设置)")
+        await asyncio.sleep(0.5)
+
+        # 阶段 4: 保存
+        await task_manager.update_progress(task_id, 0.92, "正在保存到您的文稿库...")
+        await asyncio.sleep(0.6)
+
+        # 从 llm_service 调用 mock 构建器
+        from app.services.llm_service import _build_mock_presentation
+        presentation = _build_mock_presentation(text, target_lang, style)
+        was_repaired = False
     else:
-        await task_manager.update_progress(task_id, 0.85, "跳过图像生成 (已按用户设置)")
+        # 真实模式 — 走 LLM API
+        await task_manager.update_progress(task_id, 0.05, "正在解构您的文稿大纲...")
+        await task_manager.update_progress(task_id, 0.12, "识别内容层级与关键数据...")
 
-    # ——— 阶段 4/4：保存完成 (90% → 100%) ———
-    await task_manager.update_progress(task_id, 0.92, "正在保存到您的文稿库...")
+        presentation, was_repaired = await llm.generate_presentation(
+            text=text, style=style, target_lang=target_lang, enable_images=enable_images
+        )
 
+        # Tier 布局拦截
+        slide_dicts = [s.model_dump() if hasattr(s, "model_dump") else s for s in presentation.slides]
+        violations = _validate_layouts_for_tier(slide_dicts, user_tier)
+        if violations:
+            await task_manager.update_progress(
+                task_id, 0.25,
+                f"检测到高级布局 {violations}，仅 Premium 用户可用。请升级会员。"
+            )
+            raise ValueError(
+                f"该排版属于高级会员专属 ({', '.join(violations)})，请升级后使用。"
+            )
+
+        lang_label = "中文" if target_lang == "zh" else ("英文" if target_lang == "en" else "原文")
+        await task_manager.update_progress(
+            task_id, 0.30,
+            f"大纲解析完成，共 {len(presentation.slides)} 页，已翻译为{lang_label}..."
+        )
+
+        # 阶段 2
+        await task_manager.update_progress(task_id, 0.35, "正在为您进行核心页面排版...")
+        await task_manager.update_progress(task_id, 0.50, "优化排版节奏与视觉层次...")
+        await task_manager.update_progress(task_id, 0.60, "应用设计系统 (间距/配色/字体)...")
+        await task_manager.update_progress(task_id, 0.65, "页面排版完成，正在进行视觉润色...")
+
+        # 阶段 3
+        if enable_images:
+            await task_manager.update_progress(task_id, 0.68, "正在调用图像引擎生成高质量视觉配图...")
+            try:
+                image_service = get_image_service()
+                presentation = await image_service.enrich_presentation(presentation)
+                await task_manager.update_progress(task_id, 0.85, f"视觉配图生成完成 ({len(presentation.slides)} 页已装饰)")
+            except Exception as e:
+                logger.warning(f"Image enrichment failed (non-fatal): {e}")
+                await task_manager.update_progress(task_id, 0.85, "视觉配图使用默认素材 (可后续替换)")
+        else:
+            await task_manager.update_progress(task_id, 0.85, "跳过图像生成 (已按用户设置)")
+
+        # 阶段 4
+        await task_manager.update_progress(task_id, 0.92, "正在保存到您的文稿库...")
+
+    # ── 保存到数据库 (mock 和 real 共用) ──
     pres_json = presentation.model_dump_json()
     saved = SavedPresentation(
         user_id=user_id,
@@ -122,13 +164,12 @@ async def _run_generation(
 
     await task_manager.update_progress(task_id, 0.98, "保存成功，准备发放结果...")
 
-    result = {
+    return {
         "success": True,
         "presentation": presentation.model_dump(),
         "was_repaired": was_repaired,
         "saved_id": saved.id,
     }
-    return result
 
 
 async def _run_editing(

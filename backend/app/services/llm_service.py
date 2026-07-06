@@ -1,17 +1,15 @@
 """
-LLM Service — Multi-provider with DeepSeek hardening.
+LLM Service — Multi-provider with DeepSeek hardening + local mock mode.
 
-Key design decisions for DeepSeek compatibility:
-  - NEVER send response_format={"type": "json_object"} to DeepSeek/GLM/Ollama
-  - Always enforce JSON-only output via System Prompt (stronger than json_object)
-  - Strip markdown fences on receive (DeepSeek sometimes wraps in ```json)
-  - Timeout + safe fallback presentation on any failure
-  - Language-locked output: bilingual prompts, no mixed CN/EN
+Mock mode activates automatically when LLM_API_KEY is missing or invalid.
+The mock pipeline simulates real 3-stage progress with dynamic slide assembly.
 """
 
+import asyncio
 import json
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Callable, Awaitable
 
 from openai import AsyncOpenAI, APIError, RateLimitError, BadRequestError, APITimeoutError
 
@@ -25,8 +23,7 @@ from app.services.json_repair import (
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# JSON-enforcement prefix — injected into every user message
-# DeepSeek handles this better than response_format json_object
+# JSON-enforcement prefix
 # ============================================================
 
 JSON_ENFORCEMENT = (
@@ -38,10 +35,6 @@ JSON_ENFORCEMENT = (
     "Example of FORBIDDEN output: ```json\\n{...}\\n```\n"
     "Example of CORRECT output: {\"metadata\":{...},\"slides\":[...]}"
 )
-
-# ============================================================
-# System prompts
-# ============================================================
 
 SYSTEM_PROMPT_GENERATE = (
     "You are a professional presentation designer AI that outputs ONLY raw JSON. "
@@ -55,25 +48,137 @@ SYSTEM_PROMPT_EDIT = (
     "No markdown fences, no explanations. Just the JSON."
 )
 
+
+def is_mock_mode() -> bool:
+    """Check if we're in local mock mode (no valid API key configured)."""
+    settings = get_settings()
+    key = (settings.LLM_API_KEY or "").strip()
+    if not key:
+        return True
+    if key.startswith("sk-your-") or "placeholder" in key.lower():
+        return True
+    return False
+
+
 # ============================================================
-# DeepSeek ENABLED — safe call with retry & fallback
+# Mock presentation builder — dynamic based on user input
+# ============================================================
+
+def _build_mock_presentation(text: str, target_lang: str, style: str) -> Presentation:
+    """Build a 3-slide mock presentation from user input.
+
+    Slide 1 (title): main title + subtitle extracted from text
+    Slide 2 (two-column or bullet-list): content breakdown
+    Slide 3 (highlight-number): key takeaway
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Extract a title from first line or first 50 chars
+    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+    first_line = lines[0] if lines else text.strip()
+    raw_title = first_line[:60].rstrip(".,;，。；：:")
+    title = raw_title if raw_title else "AI Generated Presentation"
+
+    # Detect rough language
+    cn_chars = len([c for c in text if '一' <= c <= '鿿'])
+    is_cn = cn_chars > len(text) * 0.3 or target_lang == "zh"
+
+    if is_cn:
+        subtitle = "AI 驱动的智能演示文稿"
+        s2_title = "核心内容"
+        s2_left_heading = "关键信息"
+        s2_left_text = (first_line + "...") if len(first_line) > 0 else "用户输入的内容概述"
+        s2_right_heading = "应用场景"
+        s2_right_text = "适用于商业汇报、学术展示、产品发布等多种场景"
+        s3_title = "数据亮点"
+        s3_number = "3 页"
+        s3_label = "智能排版幻灯片"
+        s3_bullets = ["AI 自动解析内容结构", "多布局自适应排版", "支持中英双语输出"]
+    else:
+        subtitle = "AI-Powered Smart Presentation"
+        s2_title = "Core Content"
+        s2_left_heading = "Key Information"
+        s2_left_text = (first_line + "...") if len(first_line) > 0 else "Overview of user-provided content"
+        s2_right_heading = "Applications"
+        s2_right_text = "Suitable for business reporting, academic presentations, product launches and more"
+        s3_title = "Key Highlights"
+        s3_number = "3 slides"
+        s3_label = "Smart layouts generated"
+        s3_bullets = ["AI auto-parses content structure", "Multi-layout adaptive formatting", "Bilingual output support"]
+
+    from app.models.slide import (
+        Slide, SlideLayout, Columns, ContentBlock, ContentBlockType,
+        HighlightNumber, PresentationMetadata,
+    )
+
+    return Presentation(
+        metadata=PresentationMetadata(
+            title=title,
+            author="Personal AI Presentation (Mock)",
+            createdAt=now,
+            slideCount=3,
+        ),
+        slides=[
+            Slide(
+                id="mock-1",
+                layout=SlideLayout.TITLE,
+                title=title,
+                subtitle=subtitle,
+                body=f"Generated at {now[:19]} | Style: {style}",
+            ),
+            Slide(
+                id="mock-2",
+                layout=SlideLayout.TWO_COLUMN,
+                title=s2_title,
+                columns=Columns(
+                    left=[
+                        ContentBlock(type=ContentBlockType.HEADING, text=s2_left_heading, level=2),
+                        ContentBlock(type=ContentBlockType.PARAGRAPH, text=s2_left_text),
+                    ],
+                    right=[
+                        ContentBlock(type=ContentBlockType.HEADING, text=s2_right_heading, level=2),
+                        ContentBlock(type=ContentBlockType.PARAGRAPH, text=s2_right_text),
+                    ],
+                ),
+            ),
+            Slide(
+                id="mock-3",
+                layout=SlideLayout.HIGHLIGHT_NUMBER,
+                title=s3_title,
+                highlightNumber=HighlightNumber(
+                    value=s3_number,
+                    label=s3_label,
+                ),
+                body=s3_bullets,
+            ),
+        ],
+    )
+
+
+# ============================================================
+# LLM Service with mock fallback
 # ============================================================
 
 class LLMService:
-    """Provider-agnostic LLM service. Optimised for DeepSeek."""
+    """Provider-agnostic LLM service with auto mock mode."""
 
     def __init__(self):
         settings = get_settings()
+        self._mock = is_mock_mode()
         self.client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY,
+            api_key=settings.LLM_API_KEY or "sk-placeholder",
             base_url=settings.LLM_API_BASE,
-            timeout=120.0,  # 2 minutes — enough for long presentations
+            timeout=120.0,
         )
         self.model = settings.LLM_MODEL_NAME
         self.max_tokens = settings.LLM_MAX_TOKENS
         self.temperature = settings.LLM_TEMPERATURE
         self.api_base = settings.LLM_API_BASE
-        logger.info(f"LLM Service ready: model={self.model} @ {self.api_base}")
+
+        if self._mock:
+            logger.info("🎭 LLM Service: MOCK MODE — no API key configured, using local simulation")
+        else:
+            logger.info(f"LLM Service ready: model={self.model} @ {self.api_base}")
 
     # ── public API ──────────────────────────────────────────
 
@@ -84,17 +189,18 @@ class LLMService:
         target_lang: str = "auto",
         enable_images: bool = True,
     ) -> tuple[Presentation, bool]:
-        """Generate slides from text. Returns (Presentation, was_repaired).
+        """Generate slides. Mock mode = instant build. Real mode = API call + fallback."""
 
-        On any failure → returns safe fallback (never raises to caller).
-        """
+        if self._mock:
+            logger.info(f"🎭 Mock: assembling presentation from user input ({len(text)} chars)")
+            return _build_mock_presentation(text, target_lang, style), False
+
         prompt = build_generate_prompt(text, style, target_lang, enable_images)
         prompt += JSON_ENFORCEMENT
 
         try:
             raw_content = await self._call(prompt, temperature=self.temperature)
             return self._parse_and_validate(raw_content)
-
         except Exception as e:
             logger.error(f"generate_presentation failed: {type(e).__name__}: {e}")
             return self._error_fallback(str(e))
@@ -105,10 +211,12 @@ class LLMService:
         instruction: str,
         target_lang: str = "auto",
     ) -> tuple[Presentation, Optional[list[str]], bool]:
-        """Incremental edit. Returns (updated_pres, changed_slide_ids, was_repaired).
+        """Incremental edit. Mock mode returns original with instruction noted."""
 
-        On any failure → returns original presentation untouched.
-        """
+        if self._mock:
+            logger.info(f"🎭 Mock edit: '{instruction[:60]}...' — returning original")
+            return presentation, ["mock-1", "mock-2", "mock-3"], False
+
         current_json = presentation.model_dump_json(indent=2)
         lang_block = self._get_lang_block(target_lang)
 
@@ -135,20 +243,79 @@ class LLMService:
             changed_ids = data.pop("changed_slide_ids", None)
             pres = Presentation(**data)
             return pres, changed_ids, was_repaired
-
         except Exception as e:
             logger.error(f"edit_presentation failed: {type(e).__name__}: {e}")
             return presentation, None, True
 
+    # ── Mock pipeline — staged progress for realistic UI ─────
+
+    async def run_mock_pipeline(
+        self,
+        progress_callback: Callable[[float, str], Awaitable[None]],
+        text: str,
+        style: str,
+        target_lang: str,
+        enable_images: bool,
+    ) -> tuple[Presentation, bool]:
+        """
+        Simulate the full generation pipeline with staged progress updates.
+
+        Timeline (matches real DeepSeek generation feel):
+          0.05 → 0.12 → 0.30  parse
+          0.35 → 0.50 → 0.65  layout
+          0.68 → 0.85           images
+          0.92 → 0.98           save
+
+        Each stage sleeps ~1s so the frontend progress bar animates smoothly.
+        """
+        lang_label = "中文" if target_lang == "zh" else ("英文" if target_lang == "en" else "原文")
+
+        # ── 阶段 1: 解析大纲 ──
+        await progress_callback(0.05, "正在解构您的文稿大纲...")
+        await asyncio.sleep(0.8)
+        await progress_callback(0.12, "识别内容层级与关键数据...")
+        await asyncio.sleep(0.8)
+        await progress_callback(0.30, f"大纲解析完成，共 3 页，已翻译为{lang_label}...")
+        await asyncio.sleep(0.6)
+
+        # ── 阶段 2: 智能排版 ──
+        await progress_callback(0.35, "正在为您进行核心页面排版...")
+        await asyncio.sleep(0.8)
+        await progress_callback(0.50, "优化排版节奏与视觉层次...")
+        await asyncio.sleep(0.8)
+        await progress_callback(0.60, "应用设计系统 (间距/配色/字体)...")
+        await asyncio.sleep(0.6)
+        await progress_callback(0.65, "页面排版完成，正在进行视觉润色...")
+        await asyncio.sleep(0.6)
+
+        # ── 阶段 3: 视觉配图 ──
+        if enable_images:
+            await progress_callback(0.68, "正在调用图像引擎生成高质量视觉配图...")
+            await asyncio.sleep(1.0)
+            await progress_callback(0.85, "视觉配图生成完成 (3 页已装饰)")
+        else:
+            await progress_callback(0.85, "跳过图像生成 (已按用户设置)")
+        await asyncio.sleep(0.5)
+
+        # ── 阶段 4: 保存 ──
+        await progress_callback(0.92, "正在保存到您的文稿库...")
+        await asyncio.sleep(0.6)
+        await progress_callback(0.98, "保存成功，准备发放结果...")
+        await asyncio.sleep(0.3)
+
+        # ── 产出 ──
+        pres = _build_mock_presentation(text, target_lang, style)
+        result = {
+            "success": True,
+            "presentation": pres.model_dump(),
+            "was_repaired": False,
+            "saved_id": "mock-saved",
+        }
+        return pres, False
+
     # ── core call ───────────────────────────────────────────
 
     async def _call(self, user_prompt: str, temperature: float) -> str:
-        """
-        Call the LLM with DeepSeek-safe parameters.
-        - Never uses response_format (DeepSeek doesn't need it with strong prompt)
-        - Retries once on APITimeoutError
-        - Always parses output through json_repair
-        """
         kwargs = dict(
             model=self.model,
             messages=[
@@ -164,7 +331,6 @@ class LLMService:
                 response = await self.client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content or ""
                 return content
-
             except APITimeoutError:
                 if attempt == 0:
                     logger.warning("LLM timeout, retrying once...")
@@ -172,10 +338,8 @@ class LLMService:
                 raise
             except BadRequestError as e:
                 err_str = str(e).lower()
-                # If DeepSeek rejects response_format, strip and retry
                 if "response_format" in err_str or "json_object" in err_str:
                     logger.info("Provider complained about response_format — ignoring")
-                    # we never send it, so this shouldn't trigger, but just in case
                     continue
                 raise
             except RateLimitError:
@@ -198,48 +362,36 @@ class LLMService:
         return LANGUAGE_INSTRUCTIONS[lang]
 
     def _parse_and_validate(self, raw_json: str) -> tuple[Presentation, bool]:
-        # Fast path: try extract JSON from surrounding text first
-        # (DeepSeek often wraps valid JSON in "Here is your JSON: ... Hope this helps!")
         fast = extract_json_content(raw_json)
         if fast is not None:
             data, was_repaired = fast, True
         else:
             data, was_repaired = self._parse_raw_json(raw_json)
-
         if data is None:
             return get_safe_presentation(raw_json), True
         if "slides" not in data or not data.get("slides"):
             return get_safe_presentation(raw_json), True
-
         seen_ids: set[str] = set()
         for i, slide_data in enumerate(data["slides"]):
             sid = slide_data.get("id", f"slide-{i+1}")
             if sid in seen_ids:
                 slide_data["id"] = f"{sid}-{i}"
             seen_ids.add(slide_data["id"])
-
         return Presentation(**data), was_repaired
 
     def _parse_raw_json(self, raw_json: str) -> tuple[Optional[dict], bool]:
         return attempt_json_repair(raw_json)
 
     def _error_fallback(self, error_msg: str) -> tuple[Presentation, bool]:
-        """
-        Return a graceful failure slide set so the UI never white-screens.
-        The error message is embedded into the fallback slides.
-        """
         pres = get_safe_presentation()
-        # Add a second slide explaining the error
         from app.models.slide import Slide, SlideLayout
         pres.slides.append(Slide(
             id="error-info",
             layout=SlideLayout.BULLET_LIST,
-            title="⚠️ Generation Halted",
+            title="Generation Halted",
             body=[
-                "The AI service returned an error while processing your request.",
-                f"Error: {error_msg[:200]}",
-                "Please try again with shorter text or a different style.",
-                "If the problem persists, check your API key and network connection.",
+                f"The AI service returned an error: {error_msg[:200]}",
+                "Please try again or configure a valid API key.",
             ],
         ))
         return pres, True
