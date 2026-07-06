@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import init_db
 from app.models.slide import HealthResponse
-from app.routes import generate, export, auth, payment
+from app.routes import generate, export, auth, payment, presentation
 from app.services.purge_scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -87,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     app.include_router(export.router)
     app.include_router(payment.router)
+    app.include_router(presentation.router)
 
     @app.get("/health", response_model=HealthResponse)
     async def health_check():

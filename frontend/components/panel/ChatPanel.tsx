@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect } from "react";
-import { MessageSquare, Play } from "lucide-react";
+import { MessageSquare, Play, History } from "lucide-react";
 import { ChatMessageBubble } from "./ChatMessage";
 import { MarkdownInput } from "./MarkdownInput";
 import { TypingIndicator } from "@/components/ui/TypingIndicator";
@@ -16,6 +16,7 @@ interface ChatPanelProps {
   onSubmit: (text: string) => void;
   onEdit?: (instruction: string) => void;
   onLoadDemo?: () => void;
+  onToggleHistory?: () => void;
 }
 
 export function ChatPanel({
@@ -24,6 +25,7 @@ export function ChatPanel({
   onSubmit,
   onEdit,
   onLoadDemo,
+  onToggleHistory,
 }: ChatPanelProps) {
   const { t } = useLanguage();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,6 +51,11 @@ export function ChatPanel({
         <span className="text-[10px] text-[#495670] ml-auto">
           {t("chat.shortcut")}
         </span>
+        {onToggleHistory && (
+          <button onClick={onToggleHistory} className="text-[#495670] hover:text-[#64FFDA] cursor-pointer" title="History">
+            <History className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Messages */}

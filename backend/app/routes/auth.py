@@ -166,7 +166,29 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user)):
     return UserResponse(
         id=current_user.user_id,
         email=current_user.email,
-        name=None,  # loaded from DB if needed
+        name=None,
         tier=current_user.tier.value,
         is_active=True,
     )
+
+
+@router.post("/verify-email")
+async def verify_email(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark the user's email as verified.
+    In production, this would validate a verification token sent via email.
+    For now, this is a simple toggle (demo mode).
+    """
+    from sqlalchemy import select
+    result = await db.execute(select(User).where(User.id == current_user.user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_active = True
+    await db.commit()
+
+    return {"success": True, "message": "Email verified successfully"}

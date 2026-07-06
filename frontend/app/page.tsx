@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { Navbar } from "@/components/layout/Navbar";
 import { AppShell } from "@/components/layout/AppShell";
 import { ChatPanel } from "@/components/panel/ChatPanel";
+import { HistoryPanel } from "@/components/panel/HistoryPanel";
 import { SlideCanvas } from "@/components/canvas/SlideCanvas";
 import { SlideRenderer } from "@/components/canvas/SlideRenderer";
 import { CanvasProgressOverlay } from "@/components/canvas/CanvasProgressOverlay";
@@ -33,6 +34,7 @@ export default function Home() {
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
   const [isExporting, setIsExporting] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   /* ---- Side effects ---- */
   useEffect(() => {
@@ -104,20 +106,49 @@ export default function Home() {
     } catch { setGenerationStatus("error"); }
   }, [presentation, t, authFetch, startPolling]);
 
-  /* ---- 导出 — 云端部署中，Toast 提示 ---- */
+  /* ---- PPTX 导出 — 调用后端 python-pptx 引擎 ---- */
   const handleExport = useCallback(async () => {
     if (!presentation) return;
     setIsExporting(true);
-    // 模拟短暂处理 + 展示 toast
-    await new Promise(r => setTimeout(r, 600));
-    showToast(
-      t("lang.label") === "中"
-        ? "高级导出引擎正在云端部署中，敬请期待！"
-        : "Advanced Export Engine is deploying to cloud, stay tuned!",
-      "info",
-    );
-    setIsExporting(false);
-  }, [presentation, showToast, t]);
+    try {
+      const filename = `${presentation.metadata.title || "presentation"}.pptx`;
+      const res = await authFetch("/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" } as Record<string, string>,
+        body: JSON.stringify({ presentation, filename }),
+      });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast("PPTX downloaded successfully!", "success");
+    } catch (err: any) {
+      showToast(err.message || t("msg.exportError"), "error");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [presentation, t, authFetch, showToast]);
+
+  /* ---- 从历史加载文稿 ---- */
+  const handleLoadFromHistory = useCallback(async (savedId: string) => {
+    setShowHistory(false);
+    try {
+      const res = await authFetch(`/presentation/load/${savedId}`);
+      if (!res.ok) throw new Error("Load failed");
+      const data = await res.json();
+      if (data.success && data.presentation) {
+        const pres = sanitizePresentation(data.presentation);
+        setPresentation(pres);
+        setActiveSlideIndex(0);
+        showToast("Presentation loaded!", "success");
+      }
+    } catch {
+      showToast("Failed to load presentation", "error");
+    }
+  }, [authFetch, showToast]);
 
   /* ---- 派生值 ---- */
   const activeSlide = useMemo(() => presentation?.slides[activeSlideIndex] || null, [presentation, activeSlideIndex]);
@@ -140,13 +171,21 @@ export default function Home() {
       <Navbar />
       <AppShell
         sidebar={
-          <ChatPanel
-            messages={messages}
-            generationStatus={isGenerating ? "generating" : generationStatus}
-            onSubmit={handleSubmit}
-            onEdit={presentation ? handleEdit : undefined}
-            onLoadDemo={presentation ? undefined : handleLoadDemo}
-          />
+          showHistory ? (
+            <HistoryPanel
+              onLoad={handleLoadFromHistory}
+              onClose={() => setShowHistory(false)}
+            />
+          ) : (
+            <ChatPanel
+              messages={messages}
+              generationStatus={isGenerating ? "generating" : generationStatus}
+              onSubmit={handleSubmit}
+              onEdit={presentation ? handleEdit : undefined}
+              onLoadDemo={presentation ? undefined : handleLoadDemo}
+              onToggleHistory={() => setShowHistory(true)}
+            />
+          )
         }
         canvas={
           <SlideCanvas

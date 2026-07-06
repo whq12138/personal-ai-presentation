@@ -8,7 +8,11 @@ export type SlideLayout =
   | "two-column"
   | "highlight-number"
   | "table"
-  | "bullet-list";
+  | "bullet-list"
+  | "chart"
+  | "timeline"
+  | "bleed-image"
+  | "comparison";
 
 export interface ContentBlock {
   type: "paragraph" | "heading" | "image" | "list";

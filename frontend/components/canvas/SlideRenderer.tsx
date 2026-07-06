@@ -9,6 +9,9 @@ import { TwoColumnSlide } from "./layouts/TwoColumnSlide";
 import { HighlightNumberSlide } from "./layouts/HighlightNumberSlide";
 import { TableSlide } from "./layouts/TableSlide";
 import { BulletListSlide } from "./layouts/BulletListSlide";
+import { ChartSlide } from "./layouts/ChartSlide";
+import { TimelineSlide } from "./layouts/TimelineSlide";
+import { BleedImageSlide } from "./layouts/BleedImageSlide";
 import { DefaultFallback } from "./layouts/DefaultFallback";
 
 // ============================================================
@@ -32,13 +35,11 @@ const LAYOUT_REGISTRY: Readonly<Record<string, ComponentType<SlideComponentProps
   "highlight-number": HighlightNumberSlide,
   table: TableSlide,
   "bullet-list": BulletListSlide,
-  // ↑ existing 5 layouts
-  //
-  // ↓ future layouts — add one import + one line each:
-  // chart: ChartSlide,
-  // "bleed-image": BleedImageSlide,
-  // timeline: TimelineSlide,
-  // comparison: ComparisonSlide,
+  chart: ChartSlide,
+  timeline: TimelineSlide,
+  "bleed-image": BleedImageSlide,
+  comparison: DefaultFallback,
+  // ↑ 9 layouts (5 base + 3 new + 1 fallback placeholder for comparison)
 };
 
 interface SlideRendererProps {

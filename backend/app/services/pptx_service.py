@@ -318,15 +318,65 @@ def _render_content_blocks(slide, blocks: list[ContentBlock], left, top, width, 
         p.space_after = Pt(8)
 
 
-# ============================================================
-# Layout → PPTX renderer registry (at end of file — all render
-# functions defined above, no forward-refs)
-# ============================================================
+def _render_chart_slide(slide, slide_data: Slide):
+    """Render a chart slide with bar chart placeholder."""
+    _add_title_box(slide, slide_data.title or "Data Chart")
+    chart_data = getattr(slide_data, "chart", None) or {}
+    values = (chart_data.get("data") or {}).get("values", [65, 40, 80, 55, 90, 35])
+    max_val = max(values, 1)
+    bar_left = Inches(1)
+    bar_area_h = Inches(3)
+    bar_area_w = Inches(8)
+    bar_count = len(values)
+    bar_width = bar_area_w / (bar_count * 2)
+    for i, val in enumerate(values):
+        x = bar_left + i * bar_width * 2
+        h = int(bar_area_h * (val / max_val))
+        y = int(Inches(4.5) - h)
+        shape = slide.shapes.add_shape(1, int(x), y, int(bar_width), h)
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = COLORS["accent"]
+        txBox = slide.shapes.add_textbox(int(x), y - Inches(0.3), int(bar_width), Inches(0.25))
+        p = txBox.text_frame.paragraphs[0]
+        p.text = str(val); p.font.size = Pt(10); p.font.color.rgb = COLORS["text_secondary"]; p.alignment = PP_ALIGN.CENTER
+
+
+def _render_timeline_slide(slide, slide_data: Slide):
+    """Render timeline events."""
+    _add_title_box(slide, slide_data.title or "Timeline")
+    body = slide_data.body
+    events = body if isinstance(body, list) else []
+    y = Inches(1.5)
+    for item in events[:8]:
+        text = f"{item.get('date','')}: {item.get('title',item.get('text',''))}" if isinstance(item, dict) else str(item)
+        txBox = slide.shapes.add_textbox(Inches(1.5), y, Inches(7), Inches(0.4))
+        p = txBox.text_frame.paragraphs[0]
+        p.text = f"● {text}"; p.font.size = Pt(13); p.font.color.rgb = COLORS["text_primary"]
+        y += Inches(0.5)
+
+
+def _render_bleed_image_slide(slide, slide_data: Slide):
+    """Render bleed-image slide with centered overlay text."""
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = COLORS["bg_primary"]
+    title = slide_data.title or "Image Slide"
+    subtitle = slide_data.subtitle or ""
+    txBox = slide.shapes.add_textbox(Inches(1.5), Inches(2), Inches(7), Inches(2))
+    tf = txBox.text_frame; tf.word_wrap = True
+    p = tf.paragraphs[0]; p.text = title; p.font.size = Pt(36); p.font.bold = True
+    p.font.color.rgb = COLORS["accent"]; p.alignment = PP_ALIGN.CENTER
+    if subtitle:
+        p2 = tf.add_paragraph(); p2.text = subtitle; p2.font.size = Pt(18)
+        p2.font.color.rgb = COLORS["text_secondary"]; p2.alignment = PP_ALIGN.CENTER
+
+
 _LAYOUT_RENDERERS: dict[str, callable] = {
     "title": _render_title_slide,
     "two-column": _render_two_column_slide,
     "highlight-number": _render_highlight_number_slide,
     "table": _render_table_slide,
     "bullet-list": _render_bullet_list_slide,
-    # Future layouts: add one function + one line here
+    "chart": _render_chart_slide,
+    "timeline": _render_timeline_slide,
+    "bleed-image": _render_bleed_image_slide,
 }
