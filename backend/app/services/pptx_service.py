@@ -321,15 +321,22 @@ def _render_content_blocks(slide, blocks: list[ContentBlock], left, top, width, 
 def _render_chart_slide(slide, slide_data: Slide):
     """Render a chart slide with bar chart placeholder."""
     _add_title_box(slide, slide_data.title or "Data Chart")
-    chart_data = getattr(slide_data, "chart", None) or {}
-    values = (chart_data.get("data") or {}).get("values", [65, 40, 80, 55, 90, 35])
-    max_val = max(values, 1)
+    raw_values = [65, 40, 80, 55, 90, 35]  # default
+    try:
+        chart_data = getattr(slide_data, "chart", None) or {}
+        if isinstance(chart_data, dict) and "data" in chart_data:
+            vals = chart_data["data"].get("values", raw_values)
+            if isinstance(vals, list) and all(isinstance(v, (int, float)) for v in vals):
+                raw_values = vals
+    except Exception:
+        pass
+    max_val = max(int(v) for v in raw_values) or 1
     bar_left = Inches(1)
     bar_area_h = Inches(3)
     bar_area_w = Inches(8)
-    bar_count = len(values)
-    bar_width = bar_area_w / (bar_count * 2)
-    for i, val in enumerate(values):
+    bar_count = len(raw_values)
+    bar_width = bar_area_w / max(bar_count * 2, 1)
+    for i, val in enumerate(raw_values):
         x = bar_left + i * bar_width * 2
         h = int(bar_area_h * (val / max_val))
         y = int(Inches(4.5) - h)

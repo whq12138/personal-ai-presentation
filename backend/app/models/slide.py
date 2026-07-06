@@ -17,6 +17,10 @@ class SlideLayout(str, Enum):
     HIGHLIGHT_NUMBER = "highlight-number"
     TABLE = "table"
     BULLET_LIST = "bullet-list"
+    CHART = "chart"
+    TIMELINE = "timeline"
+    BLEED_IMAGE = "bleed-image"
+    COMPARISON = "comparison"
 
 
 class ContentBlockType(str, Enum):
